@@ -58,7 +58,7 @@ async function sendTelegramMessage(chatId: number, text: string) {
     await fetch(`${TELEGRAM_API}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text: chunk }),
+      body: JSON.stringify({ chat_id: chatId, text: chunk, parse_mode: "HTML" }),
     });
   }
 }
@@ -68,7 +68,7 @@ async function sendStatusMessage(chatId: number, text: string): Promise<number |
     const res = await fetch(`${TELEGRAM_API}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text }),
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
     });
     const data = await res.json();
     return data.result?.message_id ?? null;
@@ -81,7 +81,7 @@ async function editStatusMessage(chatId: number, messageId: number, text: string
   await fetch(`${TELEGRAM_API}/editMessageText`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, message_id: messageId, text }),
+    body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, parse_mode: "HTML" }),
   });
 }
 
@@ -260,9 +260,14 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 function postProcess(text: string): string {
   let result = stripThinkTags(text);
   result = stripMarkdown(result);
+  result = escapeHtml(result);
   result = result
     .replace(/\b나는\b/g, "텐삿삐는")
     .replace(/\b나의\b/g, "텐삿삐의")
@@ -293,7 +298,13 @@ async function callLLM(userMessage: string, progress: ProgressReporter): Promise
     // 코드에서 면책 + 출처 이어붙이기 (모델이 생성하지 않음)
     reply += "\n\n투자 판단은 센빠이가 하는 거야~ 텐삿삐는 정보만 주는 거라구! 💖";
     if (searchResult?.sources && searchResult.sources.length > 0) {
-      const sourceLines = searchResult.sources.slice(0, 5).map((s) => `🔗 ${s}`);
+      const sourceLines = searchResult.sources.slice(0, 5).map((s) => {
+        const colonIdx = s.lastIndexOf(": http");
+        if (colonIdx === -1) return `🔗 ${s}`;
+        const title = s.slice(0, colonIdx);
+        const url = s.slice(colonIdx + 2);
+        return `🔗 <a href="${url}">${title}</a>`;
+      });
       reply += `\n\n📅 조회일: ${TODAY}\n${sourceLines.join("\n")}`;
     }
 
