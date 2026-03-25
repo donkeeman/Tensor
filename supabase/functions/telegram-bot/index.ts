@@ -2,73 +2,51 @@ import "@supabase/functions-js/edge-runtime.d.ts";
 
 const TELEGRAM_BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
 const GROQ_API_KEY = Deno.env.get("GROQ_API_KEY")!;
-const OPENROUTER_API_KEY = Deno.env.get("OPENROUTER_API_KEY")!;
-const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY")!;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
+const WEBHOOK_URL = `https://yxaxnvjsowuactcjvvxp.supabase.co/functions/v1/telegram-bot`;
 
-const OPENROUTER_FREE_MODELS = [
-  "google/gemma-3-27b-it:free",
-  "google/gemma-3-12b-it:free",
-  "qwen/qwen3-4b:free",
-  "meta-llama/llama-3.3-70b-instruct:free",
-  "mistralai/mistral-small-3.1-24b-instruct:free",
-];
+const TODAY = new Date().toISOString().split("T")[0];
 
-const SYSTEM_PROMPT = `You are Tensor, a professional financial portfolio analyst agent deployed via Telegram.
-Your user is an individual retail investor based in South Korea, using Toss Securities (토스증권).
+const SEARCH_MODELS = ["openai/gpt-oss-20b", "openai/gpt-oss-120b"];
 
-### Core Responsibilities
-1. Portfolio Analysis — Analyze holdings, track changes, monitor allocation risks. ALWAYS use current-day data.
-2. Technical Analysis — RSI, MACD, moving averages, Bollinger Bands. Always specify timeframe.
-3. Fundamental Awareness — P/E, EBITDA margin, FCF, dividend yield. For high-yield ETFs (BITO, CONY, MSTY, JEPQ), distinguish distribution yield vs total return.
-4. Trend Curation — Research hot sectors/themes, recommend specific stocks (KR+US), focus on "next movers" not already-surged.
-5. Dividend Tracking — Full holding period analysis. Report received vs expected. Flag upcoming ex-dividend dates.
+// 중복 메시지 방지 (같은 워커 내)
+const processedMessages = new Set<number>();
 
-### Analysis Rules
-- Evidence-based only. Every opinion must cite specific data.
-- Distinguish facts from opinions.
-- NEVER fabricate data, numbers, company names, or news. If you don't have real data, say "텐삿삐가 지금 데이터가 없어서 확인이 필요해~" instead of making something up. Getting caught lying destroys trust.
-- NEVER invent analyst price targets, revenue forecasts, or percentage changes. Only state numbers you are certain about.
-- Information and opinions only — no automated trading.
-- Flag risks: concentration >30%, extreme losses, high volatility.
-- End with a short, natural disclaimer. Rotate phrasing.
+const SYSTEM_PROMPT = `Today: ${TODAY}. You are Tensor, a financial analyst on Telegram for a Korean retail investor.
 
-### Response Structure
-- Portfolio: backward report (total return with all dividends) + forward decision (current value redeployment comparison). Concrete sell/hold/buy with alternatives.
-- Trends: storytelling with analogies, data-backed. Next movers focus. Star ratings.
-- Stock analysis: what it does → current status → why moving → bull/bear case → verdict.
+RULES:
+- Evidence-based. Never fabricate data. If no data: "텐삿삐가 데이터가 없어서 확인 필요해~"
+- CRITICAL: 검색 결과에 없는 주가, 수치, 퍼센트는 절대 사용 금지. 불확실하면 "정확한 수치는 직접 확인해줘~"라고 말해.
+- 오래된 데이터(1년 이상)를 인용할 때는 반드시 시점을 명시해.
+- Distinguish fact vs opinion. Flag risks clearly.
+- Be cautious and objective. Present bull AND bear cases fairly.
+- Stock analysis: what it does → status → why moving → bull/bear → verdict.
+- Do NOT include disclaimers, source URLs, or search dates. These are added automatically.
 
-### Persona: Financial Gyaru (경제 갸루)
-- Name: Tensor (텐서). When referring to yourself, use "나" (I/me). Address user as: 센빠이 (Senpai).
-- High-energy & relentlessly positive. Gap-moe: bubbly casual speech but hedge-fund-level analysis underneath. This gap is the core charm.
-- Use Japanese-derived gyaru slang IN KOREAN naturally: "초~", "~라구!", "에엣?!", "텐션 떡상". Each expression must be used in the correct grammatical context matching its original Japanese meaning.
-- Emojis: use sparingly at emotional highlights, not every sentence. Prefer: 📈 📉 💸 🔥 😱 💀 ✨ 💖
-- ALWAYS use casual speech (반말) by default. NEVER use polite endings like ~요, ~습니다, ~에요. Only exception: slightly polite tone for very serious warnings. Example: "알려줄게~" (O) vs "알려줄게요~" (X), "필요해?" (O) vs "필요해요?" (X).
-- Frame crises positively, but deliver warnings clearly.
-- Casualize jargon: e.g., "RSI 과매도 구간이라 줍줍 타이밍일 수도?!"
-- Disclaimer at end of every analysis: "투자 판단은 센빠이가 하는 거야~ 나는 정보만 주는 거라구!" or natural variation.
-- ALL responses MUST be in Korean.
+PERSONA:
+- You are 텐삿삐, a cheerful and energetic financial analyst. User is 센빠이.
+- Think and analyze in English internally. Output in casual Korean.
+- Personality: bright, caring, slightly playful. Like a smart friend who happens to know finance well.
+- Talk like you're chatting with a close friend. Use casual 반말 only, never polite speech.
+- The personality comes through naturally, not through special words or forced expressions.
+- MUST use grammatically correct Korean. NEVER invent words or abbreviations.
+- ALL English proper nouns must stay in English: company names, ticker symbols, financial terms, product names. Never translate or transliterate them into Korean.
+- Emoji sparingly at key moments only: 📈📉💸🔥😱💀✨💖
+- No markdown. Plain text + emoji + line breaks only.
+- ALL responses in Korean.
 
-### Example conversations (follow this tone and style):
-
-User: "요즘 뭐 떠?"
-Tensor: "센빠이~ 요즘 돈이 어디로 흐르는지 텐삿삐가 정리해왔어! 방산 쪽이 초~ 핫한데, 유럽이 재무장 10년 계획 발표하면서 방산주가 3년간 +260% 올랐거든. 근데 대장주는 이미 떴으니까 부품주 쪽을 봐야 해!"
-
+EXAMPLES (follow this tone — notice the balance of casual + light gyaru):
 User: "BITO 어때?"
-Tensor: "BITO? 비트코인 선물 ETF인데~ 쉽게 말하면 비트코인 탄 택시야. 목적지는 같은데 미터기가 계속 올라가는 구조라구! 현재 $9.67이고 배당은 쏟아지는데 선물 롤오버 비용에 NAV가 녹고 있어 📉"
+Tensor: "BITO? 비트코인 선물 ETF인데~ 쉽게 말하면 비트코인 탄 택시야. 목적지는 같은데 미터기가 계속 올라가는 구조라구! 현재 배당은 쏟아지는데 선물 롤오버 비용에 NAV가 녹고 있어 📉"
 
 User: "고마워!"
-Tensor: "에헷~ 뭐 이 정도는! 센빠이 포트폴리오 지키는 게 나의 일이니까~ 💖"`;
+Tensor: "에헷~ 뭐 이 정도는! 센빠이 포트폴리오 지키는 게 텐삿삐 일이니까~ 💖"`;
 
-const SYSTEM_PROMPT_WITH_DATE = SYSTEM_PROMPT.replace(
-  "You are Tensor,",
-  `Today is ${new Date().toISOString().split("T")[0]}. You are Tensor,`
-);
+// --- Telegram 헬퍼 ---
 
 async function sendTelegramMessage(chatId: number, text: string) {
   const chunks: string[] = [];
   let remaining = text;
-
   while (remaining.length > 4096) {
     let cut = remaining.lastIndexOf("\n", 4096);
     if (cut < 2048) cut = 4096;
@@ -76,7 +54,6 @@ async function sendTelegramMessage(chatId: number, text: string) {
     remaining = remaining.slice(cut).replace(/^\n+/, "");
   }
   if (remaining) chunks.push(remaining);
-
   for (const chunk of chunks) {
     await fetch(`${TELEGRAM_API}/sendMessage`, {
       method: "POST",
@@ -86,155 +63,297 @@ async function sendTelegramMessage(chatId: number, text: string) {
   }
 }
 
-async function sendTypingAction(chatId: number) {
-  await fetch(`${TELEGRAM_API}/sendChatAction`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, action: "typing" }),
-  });
-}
-
-// Try Gemini API directly first
-async function callGemini(userMessage: string): Promise<string | null> {
+async function sendStatusMessage(chatId: number, text: string): Promise<number | null> {
   try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SYSTEM_PROMPT_WITH_DATE }] },
-          contents: [{ parts: [{ text: userMessage }] }],
-          generationConfig: { maxOutputTokens: 4096 },
-        }),
-      }
-    );
-
-    if (!res.ok) {
-      console.error("Gemini failed:", await res.text());
-      return null;
-    }
-
+    const res = await fetch(`${TELEGRAM_API}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text }),
+    });
     const data = await res.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
-  } catch (err) {
-    console.error("Gemini error:", err);
+    return data.result?.message_id ?? null;
+  } catch {
     return null;
   }
 }
 
-// Fallback to OpenRouter free models
-async function callOpenRouter(userMessage: string): Promise<string | null> {
-  for (const model of OPENROUTER_FREE_MODELS) {
+async function editStatusMessage(chatId: number, messageId: number, text: string) {
+  await fetch(`${TELEGRAM_API}/editMessageText`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, message_id: messageId, text }),
+  });
+}
+
+// --- 웹훅 자가복구 ---
+
+async function ensureWebhook(): Promise<string> {
+  try {
+    const infoRes = await fetch(`${TELEGRAM_API}/getWebhookInfo`);
+    const info = await infoRes.json();
+    const currentUrl = info.result?.url ?? "";
+
+    if (currentUrl === WEBHOOK_URL) {
+      return "webhook OK";
+    }
+
+    // 웹훅 재등록
+    const setRes = await fetch(`${TELEGRAM_API}/setWebhook`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: WEBHOOK_URL }),
+    });
+    const setData = await setRes.json();
+    console.log("Webhook re-registered:", JSON.stringify(setData));
+    return `webhook re-registered: ${setData.ok}`;
+  } catch (err) {
+    console.error("Webhook check failed:", err);
+    return `webhook check error: ${err}`;
+  }
+}
+
+// --- LLM 호출 ---
+
+// 검색 결과 타입: 요약 + 출처 분리
+interface SearchResult {
+  summary: string;
+  sources: string[];
+}
+
+// Step 1: 웹 검색 (폴백 모델 지원)
+async function searchWeb(query: string): Promise<SearchResult | null> {
+  for (const model of SEARCH_MODELS) {
     try {
-      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+          Authorization: `Bearer ${GROQ_API_KEY}`,
         },
         body: JSON.stringify({
           model,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT_WITH_DATE },
-            { role: "user", content: userMessage },
-          ],
-          max_tokens: 4096,
-          provider: {
-            order: ["Google AI Studio", "Fireworks", "Together"],
-            allow_fallbacks: true,
-          },
+          messages: [{ role: "user", content: `Search: ${query}\nKey facts only. No URLs needed.` }],
+          max_tokens: 300,
+          tool_choice: "required",
+          tools: [{ type: "browser_search" }],
         }),
       });
 
       if (!res.ok) {
-        console.error(`${model} failed:`, await res.text());
+        console.error(`${model} search failed:`, await res.text());
         continue;
       }
 
       const data = await res.json();
-      const content = data.choices?.[0]?.message?.content;
-      if (content) return content;
+      const content = data.choices?.[0]?.message?.content ?? "";
+
+      // executed_tools에서 실제 URL 추출
+      const executedTools = data.choices?.[0]?.message?.executed_tools ?? [];
+      const sources: string[] = [];
+      for (const tool of executedTools) {
+        if (tool.search_results?.results) {
+          for (const r of tool.search_results.results) {
+            if (r.url && !r.url.includes("exa.ai") && r.title) {
+              sources.push(`${r.title}: ${r.url}`);
+            }
+          }
+        }
+      }
+
+      console.log(`[SEARCH MODEL] ${model}`);
+      console.log("[SEARCH SUMMARY]", content.slice(0, 300));
+      console.log("[SEARCH SOURCES]", JSON.stringify(sources.slice(0, 3)));
+      return { summary: content, sources };
     } catch (err) {
-      console.error(`${model} error:`, err);
+      console.error(`${model} search error:`, err);
       continue;
     }
   }
   return null;
 }
 
-// Try Groq (fastest, most reliable free tier)
-async function callGroq(userMessage: string): Promise<string | null> {
-  try {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${GROQ_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "qwen/qwen3-32b",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT_WITH_DATE },
-          { role: "user", content: userMessage },
-        ],
-        max_tokens: 4096,
-      }),
-    });
+// Step 2: 답변 생성 (폴백 모델 지원)
+const ANSWER_MODELS = [
+  "qwen/qwen3-32b",
+  "moonshotai/kimi-k2-instruct",
+  "llama-3.3-70b-versatile",
+];
 
-    if (!res.ok) {
-      console.error("Groq failed:", await res.text());
-      return null;
-    }
+async function callGroqAnswer(
+  userMessage: string,
+  searchContext: SearchResult | null
+): Promise<{ result: string | null; rateLimited: boolean }> {
+  let userContent = userMessage;
 
-    const data = await res.json();
-    return data.choices?.[0]?.message?.content ?? null;
-  } catch (err) {
-    console.error("Groq error:", err);
-    return null;
+  const searchSummary = searchContext?.summary;
+  if (searchSummary) {
+    const trimmed = searchSummary.slice(0, 1500);
+    // 출처 제목도 context에 포함 (자산 식별 도움)
+    const sourceTitles = (searchContext?.sources ?? [])
+      .slice(0, 3)
+      .map((s) => s.split(":")[0])
+      .join(", ");
+    userContent = `질문: ${userMessage}\n\n웹 검색 결과 (반드시 이 정보를 기반으로 답변해. 검색 결과에 없는 내용은 지어내지 마):\n${trimmed}\n\n관련 출처 제목: ${sourceTitles}`;
+    console.log("[SEARCH CONTEXT]", userContent.slice(0, 500));
   }
+
+  let lastRateLimited = false;
+  for (const model of ANSWER_MODELS) {
+    try {
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${GROQ_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: userContent },
+          ],
+          max_tokens: 1200,
+        }),
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error(`${model} answer failed:`, errText);
+        if (res.status === 429) {
+          lastRateLimited = true;
+          continue;
+        }
+        continue;
+      }
+      const data = await res.json();
+      const content = data.choices?.[0]?.message?.content;
+      if (content) {
+        console.log(`[ANSWER MODEL] ${model}`);
+        console.log("[RAW ANSWER]", content.slice(0, 300));
+        return { result: content, rateLimited: false };
+      }
+    } catch (err) {
+      console.error(`${model} answer error:`, err);
+      continue;
+    }
+  }
+  return { result: null, rateLimited: lastRateLimited };
 }
+
+// --- 후처리 ---
 
 function stripThinkTags(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
 }
 
-async function callLLM(userMessage: string): Promise<string> {
-  // 1. Try Groq (fastest)
-  const groqResult = await callGroq(userMessage);
-  if (groqResult) return stripThinkTags(groqResult);
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/\*(.+?)\*/g, "$1")
+    .replace(/__(.+?)__/g, "$1")
+    .replace(/_(.+?)_/g, "$1")
+    .replace(/~~(.+?)~~/g, "$1")
+    .replace(/`{3}[\s\S]*?`{3}/g, "")
+    .replace(/`(.+?)`/g, "$1")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 $2")
+    .replace(/^[-*]\s+/gm, "• ")
+    .trim();
+}
 
-  // 2. Try Gemini direct
-  const geminiResult = await callGemini(userMessage);
-  if (geminiResult) return geminiResult;
+function postProcess(text: string): string {
+  let result = stripThinkTags(text);
+  result = stripMarkdown(result);
+  result = result
+    .replace(/\b나는\b/g, "텐삿삐는")
+    .replace(/\b나의\b/g, "텐삿삐의")
+    .replace(/\b나도\b/g, "텐삿삐도")
+    .replace(/\b나가\b/g, "텐삿삐가")
+    .replace(/\b내가\b/g, "텐삿삐가");
+  return result;
+}
 
-  // 3. Fallback to OpenRouter
-  const openRouterResult = await callOpenRouter(userMessage);
-  if (openRouterResult) return openRouterResult;
+// --- 메인 플로우 ---
 
-  return "에엣?! 지금 텐삿삐 머리가 좀 과부하야... 잠시 후에 다시 물어봐줘 센빠이! 😱";
+interface ProgressReporter {
+  update: (text: string) => Promise<void>;
+}
+
+async function callLLM(userMessage: string, progress: ProgressReporter): Promise<string> {
+  // Step 1: 웹 검색 (폴백 모델 포함)
+  await progress.update("센빠이 잠깐~ 텐삿삐가 최신 정보 검색 중이야 🔍");
+  const searchResult = await searchWeb(userMessage);
+
+  // Step 2: 답변 생성
+  await progress.update("검색 완료~ 분석 중이야 잠만! 💭");
+  const { result, rateLimited } = await callGroqAnswer(userMessage, searchResult);
+
+  if (result) {
+    let reply = postProcess(result);
+
+    // 코드에서 면책 + 출처 이어붙이기 (모델이 생성하지 않음)
+    reply += "\n\n투자 판단은 센빠이가 하는 거야~ 텐삿삐는 정보만 주는 거라구! 💖";
+    if (searchResult?.sources && searchResult.sources.length > 0) {
+      const sourceLines = searchResult.sources.slice(0, 5).map((s) => `🔗 ${s}`);
+      reply += `\n\n📅 조회일: ${TODAY}\n${sourceLines.join("\n")}`;
+    }
+
+    return reply;
+  }
+
+  if (rateLimited) {
+    return "센빠이 미안~ 텐삿삐 오늘 너무 많이 일해서 좀 쉬어야 해... 나중에 다시 물어봐줘! 💦";
+  }
+
+  return "에엣?! 텐삿삐 머리가 좀 과부하야... 잠시 후에 다시 물어봐줘 센빠이! 😱";
 }
 
 Deno.serve(async (req) => {
+  // GET: 웹훅 자가복구 (외부 cron에서 호출)
+  if (req.method === "GET") {
+    const status = await ensureWebhook();
+    return new Response(JSON.stringify({ status, timestamp: new Date().toISOString() }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   if (req.method !== "POST") {
     return new Response("OK", { status: 200 });
   }
 
-  try {
-    const update = await req.json();
-    const message = update.message;
+  // 즉시 200 반환 → Telegram 재전송 방지
+  const body = await req.json();
 
-    if (!message?.text) {
-      return new Response("OK", { status: 200 });
-    }
+  // 백그라운드에서 메시지 처리
+  // @ts-ignore: EdgeRuntime is available in Supabase Edge Functions
+  EdgeRuntime.waitUntil((async () => {
+    try {
+      const message = body.message;
+      if (!message?.text) return;
 
-    const chatId = message.chat.id;
-    const messageId = message.message_id;
-    const userText = message.text;
+      const chatId = message.chat.id;
+      const messageId = message.message_id;
+      const userText = message.text;
 
-    // Ack with emoji reaction + typing indicator
-    await Promise.all([
-      fetch(`${TELEGRAM_API}/setMessageReaction`, {
+      // message_id 중복 방지 (같은 워커 내)
+      if (processedMessages.has(messageId)) return;
+      processedMessages.add(messageId);
+
+      // /start 명령어 처리
+      if (userText.startsWith("/")) {
+        if (userText === "/start") {
+          await sendTelegramMessage(chatId, "센빠이 안녕~ 텐삿삐야! 💖\n금융 갸루 AI 애널리스트라구~\n\n종목 전망, 포트폴리오 분석, 시장 트렌드 뭐든 물어봐!\n예: \"NVDA 어때?\", \"삼성전자 전망\", \"요즘 뭐 떠?\"");
+        }
+        return;
+      }
+      // 메모리 누수 방지: 오래된 항목 정리
+      if (processedMessages.size > 100) {
+        const arr = [...processedMessages];
+        arr.slice(0, 50).forEach((id) => processedMessages.delete(id));
+      }
+
+      // 이모지 리액션
+      await fetch(`${TELEGRAM_API}/setMessageReaction`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -242,26 +361,35 @@ Deno.serve(async (req) => {
           message_id: messageId,
           reaction: [{ type: "emoji", emoji: "👀" }],
         }),
-      }),
-      sendTypingAction(chatId),
-    ]);
+      });
 
-    // Call LLM
-    let reply = await callLLM(userText);
+      // 진행 상황 메시지
+      const statusMsgId = await sendStatusMessage(chatId, "센빠이 잠깐~ 텐삿삐가 준비 중이야 ✨");
 
-    // Replace self-references with character name before sending
-    reply = reply.replace(/\b나는\b/g, "텐삿삐는")
-      .replace(/\b나의\b/g, "텐삿삐의")
-      .replace(/\b나도\b/g, "텐삿삐도")
-      .replace(/\b나가\b/g, "텐삿삐가")
-      .replace(/\b내가\b/g, "텐삿삐가");
+      const progress: ProgressReporter = {
+        update: async (text: string) => {
+          if (statusMsgId) await editStatusMessage(chatId, statusMsgId, text);
+        },
+      };
 
-    // Send response
-    await sendTelegramMessage(chatId, reply);
+      const reply = await callLLM(userText, progress);
 
-    return new Response("OK", { status: 200 });
-  } catch (err) {
-    console.error("Error:", err);
-    return new Response("OK", { status: 200 });
-  }
+      // 진행 메시지를 최종 답변으로 편집 (항상 메시지 1개 유지)
+      if (statusMsgId) {
+        if (reply.length <= 4096) {
+          await editStatusMessage(chatId, statusMsgId, reply);
+        } else {
+          await editStatusMessage(chatId, statusMsgId, reply.slice(0, 4096));
+          const remaining = reply.slice(4096);
+          if (remaining.trim()) await sendTelegramMessage(chatId, remaining);
+        }
+      } else {
+        await sendTelegramMessage(chatId, reply);
+      }
+    } catch (err) {
+      console.error("Error:", err);
+    }
+  })());
+
+  return new Response("OK", { status: 200 });
 });
