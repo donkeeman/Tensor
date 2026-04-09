@@ -673,9 +673,15 @@ Important:
     console.log("[SEARCH CONTEXT]", userContent.slice(0, 500));
   }
 
-  // 1단계: 영어 분석
-  const analysisPrompt = mode === "research"
-    ? `Today: ${TODAY}. You are a financial analyst. Write a concise English briefing.
+  // default 모드: SYSTEM_PROMPT로 1-step 직접 호출 (TPM 절약 + 빠른 응답)
+  if (mode === "default") {
+    console.log("[DEFAULT] 1-step 직접 호출");
+    const { result, rateLimited } = await callGroqOnce(SYSTEM_PROMPT, userContent, 1500, 0.45);
+    return { result, rateLimited };
+  }
+
+  // research 모드: 2-step 파이프라인 (영어 분석 → 한국어 번역)
+  const analysisPrompt = `Today: ${TODAY}. You are a financial analyst. Write a concise English briefing.
 SECTION ORDER (mandatory):
 1) Hot Themes (Short-term: 1-2 weeks)
 - 2 to 4 themes.
@@ -693,12 +699,6 @@ RULES:
 - Use exact numbers ONLY from the authoritative Yahoo block.
 - In sections 1, 2, 3 do NOT write specific numbers or percentages.
 - Narrative context is qualitative only. Never copy numerical values from narrative.
-- Do NOT use hashtags.`
-    : `Today: ${TODAY}. You are a financial analyst. Summarize the data in clear English.
-- "Market data (Yahoo Finance)" = authoritative numbers. Use ONLY these for index/commodity/yield values.
-- "News context" = qualitative context only (why market moved, top movers). Do NOT use alternative numbers from news if they conflict with Yahoo Finance data.
-- If the user asks about themes/trends, provide short-term (1-2 weeks) hot themes first. Give ticker/ETF examples only when evidence is strong; otherwise explicitly say evidence is insufficient.
-- Keep all numbers exact. Do NOT invent data.
 - Do NOT use hashtags.`;
   console.log("[STEP 1] 영어 분석 시작");
   const { result: englishResult, rateLimited } = await callGroqOnce(analysisPrompt, userContent, 1500, 0.2);
@@ -706,12 +706,11 @@ RULES:
 
   // 2단계: 한국어 페르소나 번역
   console.log("[STEP 2] 한국어 번역 시작");
-  const translatePrompt = mode === "research" ? RESEARCH_TRANSLATE_PROMPT : TRANSLATE_PROMPT;
   const { result: koreanResult, rateLimited: rateLimited2 } = await callGroqOnce(
-    translatePrompt,
+    RESEARCH_TRANSLATE_PROMPT,
     `Translate this financial analysis to Korean as 텐삿삐:\n\n${englishResult}`,
     1500,
-    mode === "research" ? 0.55 : 0.45,
+    0.55,
   );
 
   if (!koreanResult) return { result: null, rateLimited: rateLimited2 };
