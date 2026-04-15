@@ -3,10 +3,11 @@ import contextlib
 import datetime
 import os
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from agent.graph import graph
@@ -15,11 +16,12 @@ from agent.state import AgentState
 
 load_dotenv()
 
-app = FastAPI()
-
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
+WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "").strip().rstrip("/")
+TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+WEBHOOK_PATH = f"/tg/{TELEGRAM_WEBHOOK_SECRET}" if TELEGRAM_WEBHOOK_SECRET else "/tg/__unset__"
+RESEARCH_PATH = f"/research/{TELEGRAM_WEBHOOK_SECRET}" if TELEGRAM_WEBHOOK_SECRET else "/research/__unset__"
 RESEARCH_FALLBACK_QUESTION = "시장 데이터를 가져오지 못했어. 센빠이한테 나중에 다시 확인하겠다고 말해줘."
 
 
@@ -194,8 +196,10 @@ async def process_message(chat_id: int, message_id: int, user_text: str):
 
 
 async def ensure_webhook() -> str:
-    if not WEBHOOK_URL:
-        return "webhook url not set"
+    if not WEBHOOK_BASE_URL or not TELEGRAM_WEBHOOK_SECRET:
+        return "webhook config missing"
+
+    target_url = f"{WEBHOOK_BASE_URL}{WEBHOOK_PATH}"
 
     try:
         async with httpx.AsyncClient() as client:
@@ -203,12 +207,16 @@ async def ensure_webhook() -> str:
             info_data = info_res.json()
             current_url = info_data.get("result", {}).get("url", "")
 
-            if current_url == WEBHOOK_URL:
+            if current_url == target_url:
                 return "webhook OK"
 
             set_res = await client.post(
                 f"{TELEGRAM_API}/setWebhook",
-                json={"url": WEBHOOK_URL},
+                json={
+                    "url": target_url,
+                    "secret_token": TELEGRAM_WEBHOOK_SECRET,
+                    "drop_pending_updates": True,
+                },
             )
             set_data = set_res.json()
             return f"webhook re-registered: {set_data.get('ok')}"
@@ -216,8 +224,28 @@ async def ensure_webhook() -> str:
         return f"webhook check error: {error}"
 
 
-@app.post("/")
-async def webhook(request: Request):
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    status = await ensure_webhook()
+    print(f"[startup] {status}")
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+def _verify_secret_token(header_value: str | None) -> None:
+    if not TELEGRAM_WEBHOOK_SECRET or header_value != TELEGRAM_WEBHOOK_SECRET:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
+@app.post(WEBHOOK_PATH)
+async def webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: str | None = Header(default=None),
+):
+    _verify_secret_token(x_telegram_bot_api_secret_token)
+
     body = await request.json()
     message = body.get("message")
     if not message or not message.get("text"):
@@ -242,13 +270,15 @@ async def webhook(request: Request):
     return JSONResponse({"ok": True})
 
 
+@app.post(RESEARCH_PATH)
+async def trigger_research():
+    create_background_task(run_scheduled_research())
+    return JSONResponse({"action": "research", "triggered": True})
+
+
 @app.get("/")
-async def health_and_research(action: str | None = None):
-    if action == "research":
-        create_background_task(run_scheduled_research())
-        return JSONResponse({"action": "research", "triggered": True})
-    webhook_status = await ensure_webhook()
-    return JSONResponse({"status": webhook_status, "timestamp": datetime.datetime.now().isoformat()})
+async def health():
+    return JSONResponse({"status": "ok", "timestamp": datetime.datetime.now().isoformat()})
 
 
 async def run_scheduled_research():
